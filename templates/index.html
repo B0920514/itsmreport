@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>工单数据对比分析</title>
+    <script src="https://cdn.bootcdn.net/ajax/libs/plotly.js/2.27.1/plotly.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .upload-section { margin: 20px 0; padding: 20px; border: 1px solid #ccc; }
+        .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin: 20px 0; }
+        .stat-card { padding: 10px; border: 1px solid #eee; text-align: center; }
+        #chart { margin-top: 20px; }
+        .error { color: red; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>工单数据对比分析</h1>
+        
+        <div class="upload-section">
+            <div>
+                <label for="lastWeek">上周数据:</label>
+                <input type="file" id="lastWeek" accept=".xlsx,.xls">
+            </div>
+            <div style="margin-top: 10px;">
+                <label for="thisWeek">本周数据:</label>
+                <input type="file" id="thisWeek" accept=".xlsx,.xls">
+            </div>
+            <button onclick="uploadFiles()" style="margin-top: 10px;">开始分析</button>
+            <div id="error" class="error"></div>
+        </div>
+
+        <div id="results" style="display: none;">
+            <div class="stats">
+                <div class="stat-card">
+                    <h3>上周工单数量</h3>
+                    <p id="lastWeekCount">0</p>
+                </div>
+                <div class="stat-card">
+                    <h3>本周工单数量</h3>
+                    <p id="thisWeekCount">0</p>
+                </div>
+                <div class="stat-card">
+                    <h3>新增工单数量</h3>
+                    <p id="newCount">0</p>
+                </div>
+            </div>
+            <div id="chart"></div>
+        </div>
+    </div>
+
+    <script>
+        async function uploadFiles() {
+            const lastWeekFile = document.getElementById('lastWeek').files[0];
+            const thisWeekFile = document.getElementById('thisWeek').files[0];
+            const errorDiv = document.getElementById('error');
+            const resultsDiv = document.getElementById('results');
+            
+            if (!lastWeekFile || !thisWeekFile) {
+                errorDiv.textContent = '请选择两个Excel文件';
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('lastWeek', lastWeekFile);
+            formData.append('thisWeek', thisWeekFile);
+
+            try {
+                errorDiv.textContent = '正在处理数据...';
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    errorDiv.textContent = '';
+                    resultsDiv.style.display = 'block';
+                    
+                    document.getElementById('lastWeekCount').textContent = data.last_week_count;
+                    document.getElementById('thisWeekCount').textContent = data.this_week_count;
+                    document.getElementById('newCount').textContent = data.new_ids_count;
+                    
+                    Plotly.newPlot('chart', data.chart_data.data, data.chart_data.layout);
+                } else {
+                    errorDiv.textContent = data.error || '分析过程中出现错误';
+                }
+            } catch (error) {
+                errorDiv.textContent = '上传文件时出现错误';
+                console.error('Error:', error);
+            }
+        }
+    </script>
+</body>
+</html> 
