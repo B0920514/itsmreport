@@ -6,6 +6,7 @@ import json
 import os
 import logging
 from werkzeug.utils import secure_filename
+from datetime import datetime
 
 # 设置日志
 logging.basicConfig(level=logging.DEBUG)
@@ -13,10 +14,14 @@ logger = logging.getLogger(__name__)
 
 # 优先级翻译字典
 PRIORITY_TRANSLATION = {
-    '1 : très élevée': '1级：非常高',
-    '2 : élevé': '2级：高',
-    '3 : moyen': '3级：中',
-    '4 : faible': '4级：低'
+    '1 : très élevée': 'Priority 1: Critical',
+    '2 : élevées': 'Priority 2: High',
+    '3 : moyennes': 'Priority 3: Medium',
+    '4 : basses': 'Priority 4: Low',
+    # 添加可能的变体
+    '2 : élevé': 'Priority 2: High',
+    '3 : moyen': 'Priority 3: Medium',
+    '4 : faible': 'Priority 4: Low'
 }
 
 # 现代配色方案
@@ -44,27 +49,73 @@ def index():
 
 @app.route('/upload', methods=['POST'])
 def upload_files():
-    logger.debug("开始处理文件上传请求")
+    logger.debug("Starting to process file upload request")
     
     if 'lastWeek' not in request.files or 'thisWeek' not in request.files:
-        logger.error("缺少必要的文件")
+        logger.error("Missing required files")
         return jsonify({'error': 'Both files are required'}), 400
     
     last_week = request.files['lastWeek']
     this_week = request.files['thisWeek']
     
     if last_week.filename == '' or this_week.filename == '':
-        logger.error("文件名为空")
+        logger.error("Empty filenames")
         return jsonify({'error': 'Both files are required'}), 400
     
     try:
-        logger.debug(f"正在读取上周文件: {last_week.filename}")
+        logger.debug(f"Reading last week's file: {last_week.filename}")
         df_last_week = pd.read_excel(last_week, dtype={'ID': str})
         
-        logger.debug(f"正在读取本周文件: {this_week.filename}")
+        logger.debug(f"Reading this week's file: {this_week.filename}")
         df_this_week = pd.read_excel(this_week, dtype={'ID': str})
         
-        logger.debug("处理数据比较")
+        # Convert Created On to datetime with European date format (DD.MM.YYYY)
+        df_last_week['Created On'] = pd.to_datetime(df_last_week['Created On'], format='%d.%m.%Y', dayfirst=True)
+        df_this_week['Created On'] = pd.to_datetime(df_this_week['Created On'], format='%d.%m.%Y', dayfirst=True)
+        
+        # Filter out data before 2022
+        df_last_week = df_last_week[df_last_week['Created On'].dt.year >= 2022]
+        df_this_week = df_this_week[df_this_week['Created On'].dt.year >= 2022]
+        
+        logger.debug(f"Filtered data after 2022: Last week records: {len(df_last_week)}, This week records: {len(df_this_week)}")
+        
+        # Add week number and year columns for both dataframes
+        # Use week of US calendar (Sunday start) instead of ISO calendar
+        df_last_week['Week'] = df_last_week['Created On'].dt.strftime('%U').astype(int) + 1  # strftime returns 0-based week numbers
+        df_last_week['Year'] = df_last_week['Created On'].dt.year
+        df_this_week['Week'] = df_this_week['Created On'].dt.strftime('%U').astype(int) + 1  # Adding 1 to match with 1-based week numbers
+        df_this_week['Year'] = df_this_week['Created On'].dt.year
+        
+        # Combine both dataframes for weekly analysis
+        combined_df = pd.concat([df_last_week, df_this_week])
+        
+        # Get weekly ticket counts grouped by year
+        weekly_counts = {}
+        for year in sorted(combined_df['Year'].unique()):
+            year_data = combined_df[combined_df['Year'] == year]
+            counts = year_data.groupby('Week').size().reset_index(name='Count')
+            counts['Year'] = year
+            counts['Week_Label'] = f"{year}-W" + counts['Week'].astype(str).str.zfill(2)
+            weekly_counts[year] = counts.sort_values('Week')
+            
+            # Add missing weeks with zero count
+            all_weeks = pd.DataFrame({'Week': range(1, 54)})  # 53 weeks maximum in a year
+            weekly_counts[year] = pd.merge(all_weeks, counts, on='Week', how='left').fillna(0)
+            weekly_counts[year]['Year'] = year
+            weekly_counts[year]['Count'] = weekly_counts[year]['Count'].astype(int)
+            weekly_counts[year]['Week_Label'] = f"{year}-W" + weekly_counts[year]['Week'].astype(str).str.zfill(2)
+            # Filter out weeks with zero count
+            weekly_counts[year] = weekly_counts[year][weekly_counts[year]['Count'] > 0]
+            weekly_counts[year] = weekly_counts[year].sort_values('Week')
+        
+        # Get unique years for filtering (only 2022 and later)
+        available_years = sorted([year for year in combined_df['Year'].unique().tolist() if year >= 2022])
+        
+        # 在读取数据后立即翻译优先级
+        df_last_week['Priority'] = df_last_week['Priority'].map(PRIORITY_TRANSLATION)
+        df_this_week['Priority'] = df_this_week['Priority'].map(PRIORITY_TRANSLATION)
+        
+        logger.debug("Processing data comparison")
         # Get unique IDs from both weeks
         last_week_ids = set(df_last_week['ID'].unique())
         this_week_ids = set(df_this_week['ID'].unique())
@@ -72,24 +123,22 @@ def upload_files():
         # Calculate new IDs this week
         new_ids = this_week_ids - last_week_ids
         
-        logger.debug(f"上周工单数: {len(last_week_ids)}, 本周工单数: {len(this_week_ids)}, 新增工单数: {len(new_ids)}")
+        logger.debug(f"Last week tickets: {len(last_week_ids)}, This week tickets: {len(this_week_ids)}, New tickets: {len(new_ids)}")
         
-        # 分析新增工单的Site分布和Priority分布
+        # Analyze distribution of new tickets by Site and Priority
         new_tickets_df = df_this_week[df_this_week['ID'].isin(new_ids)]
         site_counts = new_tickets_df['Site'].value_counts()
-        priority_counts = new_tickets_df['Priority'].value_counts().sort_index()  # 按优先级排序
+        priority_counts = new_tickets_df['Priority'].value_counts().sort_index()
         
-        # 翻译优先级标签
-        priority_counts.index = [PRIORITY_TRANSLATION.get(x, x) for x in priority_counts.index]
-        
-        logger.debug(f"新增工单Site分布: {site_counts.to_dict()}")
-        logger.debug(f"新增工单Priority分布: {priority_counts.to_dict()}")
+        logger.debug(f"New tickets Site distribution: {site_counts.to_dict()}")
+        logger.debug(f"New tickets Priority distribution: {priority_counts.to_dict()}")
         
         # Prepare data for visualization
         data = {
             'last_week_count': len(last_week_ids),
             'this_week_count': len(this_week_ids),
             'new_ids_count': len(new_ids),
+            'available_years': available_years,
             'chart_data': create_comparison_charts(
                 len(last_week_ids), 
                 len(this_week_ids), 
@@ -97,121 +146,181 @@ def upload_files():
                 site_counts.index.tolist(),
                 site_counts.values.tolist(),
                 priority_counts.index.tolist(),
-                priority_counts.values.tolist()
+                priority_counts.values.tolist(),
+                weekly_counts
             )
         }
         
-        logger.debug("数据处理完成，返回结果")
+        logger.debug("Data processing completed, returning results")
         return jsonify(data)
     
     except Exception as e:
-        logger.error(f"处理过程中出现错误: {str(e)}")
+        logger.error(f"Error occurred during processing: {str(e)}")
         return jsonify({'error': str(e)}), 400
 
 def create_comparison_charts(last_week_count, this_week_count, new_count, 
                            site_labels, site_values, 
-                           priority_labels, priority_values):
-    # 创建三个子图
-    fig = make_subplots(
-        rows=3, 
-        cols=1,
-        subplot_titles=('工单数据对比', '新增工单Site分布', '新增工单优先级分布'),
-        vertical_spacing=0.15
-    )
+                           priority_labels, priority_values,
+                           weekly_counts):
+    charts = []
     
-    # 添加第一个图表（工单总体对比）
-    fig.add_trace(
+    # First chart (overall ticket comparison)
+    fig1 = go.Figure()
+    fig1.add_trace(
         go.Bar(
-            x=['上周工单数', '本周工单数', '新增工单数'],
+            x=['Last Week', 'This Week', 'New Tickets'],
             y=[last_week_count, this_week_count, new_count],
             text=[last_week_count, this_week_count, new_count],
             textposition='auto',
-            name='工单数量',
+            name='Ticket Count',
             marker_color=[COLORS['primary'], COLORS['success'], COLORS['secondary']],
-            hovertemplate='%{y:,}个工单<extra></extra>'
-        ),
-        row=1, 
-        col=1
+            hovertemplate='%{y:,} tickets<extra></extra>'
+        )
     )
+    fig1.update_layout(
+        title_text="Ticket Count Comparison",
+        title_x=0.5,
+        height=400,
+        showlegend=False,
+        margin=dict(t=50, l=50, r=50, b=50),
+        paper_bgcolor='white',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family="Arial", size=12)
+    )
+    fig1.update_xaxes(title_text="Data Type", showgrid=False, showline=True, linewidth=2, linecolor='lightgray')
+    fig1.update_yaxes(title_text="Count", showgrid=True, gridwidth=1, gridcolor='lightgray', showline=True, linewidth=2, linecolor='lightgray')
+    charts.append(json.loads(fig1.to_json()))
     
-    # 添加第二个图表（Site分布）
-    fig.add_trace(
+    # Second chart (Site distribution)
+    fig2 = go.Figure()
+    fig2.add_trace(
         go.Bar(
             x=site_labels,
             y=site_values,
             text=site_values,
             textposition='auto',
-            name='Site分布',
+            name='Site Distribution',
             marker_color=COLORS['info'],
-            hovertemplate='%{y:,}个工单<extra></extra>'
-        ),
-        row=2, 
-        col=1
+            hovertemplate='%{y:,} tickets<extra></extra>'
+        )
     )
+    fig2.update_layout(
+        title_text="New Tickets by Site",
+        title_x=0.5,
+        height=400,
+        showlegend=False,
+        margin=dict(t=50, l=50, r=50, b=50),
+        paper_bgcolor='white',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family="Arial", size=12)
+    )
+    fig2.update_xaxes(title_text="Site", showgrid=False, showline=True, linewidth=2, linecolor='lightgray')
+    fig2.update_yaxes(title_text="Ticket Count", showgrid=True, gridwidth=1, gridcolor='lightgray', showline=True, linewidth=2, linecolor='lightgray')
+    charts.append(json.loads(fig2.to_json()))
     
-    # 添加第三个图表（Priority分布）
+    # Third chart (Priority distribution)
+    fig3 = go.Figure()
     priority_colors = [COLORS['error'], COLORS['warning'], COLORS['info'], COLORS['success']]
-    fig.add_trace(
+    fig3.add_trace(
         go.Bar(
             x=priority_labels,
             y=priority_values,
             text=priority_values,
             textposition='auto',
-            name='优先级分布',
+            name='Priority Distribution',
             marker_color=priority_colors[:len(priority_labels)],
-            hovertemplate='%{y:,}个工单<extra></extra>'
-        ),
-        row=3, 
-        col=1
+            hovertemplate='%{y:,} tickets<extra></extra>'
+        )
     )
-    
-    # 更新布局
-    fig.update_layout(
-        height=1200,  # 设置图表总高度
+    fig3.update_layout(
+        title_text="New Tickets by Priority",
+        title_x=0.5,
+        height=400,
         showlegend=False,
-        title_text="工单分析报告",
-        title_x=0.5,  # 标题居中
-        title_font_size=24,
-        margin=dict(t=100, l=50, r=50, b=50),  # 调整边距
-        paper_bgcolor='white',  # 背景色
-        plot_bgcolor='rgba(0,0,0,0)',  # 透明背景
-        font=dict(family="Arial", size=12)  # 设置字体
+        margin=dict(t=50, l=50, r=50, b=50),
+        paper_bgcolor='white',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family="Arial", size=12)
     )
+    fig3.update_xaxes(title_text="Priority", showgrid=False, showline=True, linewidth=2, linecolor='lightgray')
+    fig3.update_yaxes(title_text="Ticket Count", showgrid=True, gridwidth=1, gridcolor='lightgray', showline=True, linewidth=2, linecolor='lightgray')
+    charts.append(json.loads(fig3.to_json()))
     
-    # 更新所有子图的样式
-    for i in range(1, 4):
-        # 更新x轴样式
-        fig.update_xaxes(
-            showgrid=False,
-            showline=True,
-            linewidth=2,
-            linecolor='lightgray',
-            row=i,
-            col=1
+    # Fourth chart (Weekly distribution)
+    fig4 = go.Figure()
+    
+    # Add traces for each year
+    for year in sorted(weekly_counts.keys()):
+        year_data = weekly_counts[year]
+        visible = (year == 2025)  # Default to showing 2025
+        
+        fig4.add_trace(
+            go.Bar(
+                x=year_data['Week_Label'],
+                y=year_data['Count'],
+                text=year_data['Count'],
+                textposition='auto',
+                name=f'Weekly Distribution {year}',
+                marker_color=COLORS['primary'],
+                hovertemplate='%{x}<br>%{y:,} tickets<extra></extra>',
+                visible=visible
+            )
         )
-        # 更新y轴样式
-        fig.update_yaxes(
-            showgrid=True,
-            gridwidth=1,
-            gridcolor='lightgray',
-            showline=True,
-            linewidth=2,
-            linecolor='lightgray',
-            row=i,
-            col=1
-        )
     
-    # 更新x轴和y轴标签
-    fig.update_xaxes(title_text="数据类型", row=1, col=1)
-    fig.update_yaxes(title_text="数量", row=1, col=1)
+    # Create year buttons
+    year_buttons = []
+    for i, year in enumerate(sorted(weekly_counts.keys())):
+        visibility = [False] * len(weekly_counts)
+        visibility[i] = True
+        year_buttons.append(dict(
+            args=[{"visible": visibility}],
+            label=str(year),
+            method="update"
+        ))
     
-    fig.update_xaxes(title_text="Site", row=2, col=1)
-    fig.update_yaxes(title_text="工单数量", row=2, col=1)
+    fig4.update_layout(
+        title_text="Weekly Ticket Distribution",
+        title_x=0.5,
+        height=400,
+        showlegend=False,
+        margin=dict(t=50, l=50, r=50, b=50),
+        paper_bgcolor='white',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family="Arial", size=12),
+        updatemenus=[
+            dict(
+                buttons=year_buttons,
+                direction="down",
+                showactive=True,
+                x=0.1,
+                y=1.15,
+                xanchor="left",
+                yanchor="top",
+                bgcolor='white',
+                bordercolor='#2196F3',
+                borderwidth=2,
+                font=dict(size=14),
+                pad=dict(r=10, t=10)
+            )
+        ],
+        annotations=[
+            dict(
+                text="Select Year:",
+                x=0.1,
+                y=1.2,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(size=14, color='#2196F3'),
+                xanchor="right"
+            )
+        ]
+    )
+    fig4.update_xaxes(title_text="Week Number", showgrid=False, showline=True, linewidth=2, linecolor='lightgray')
+    fig4.update_yaxes(title_text="Ticket Count", showgrid=True, gridwidth=1, gridcolor='lightgray', showline=True, linewidth=2, linecolor='lightgray')
+    charts.append(json.loads(fig4.to_json()))
     
-    fig.update_xaxes(title_text="优先级", row=3, col=1)
-    fig.update_yaxes(title_text="工单数量", row=3, col=1)
-    
-    return json.loads(fig.to_json())
+    return charts
 
 if __name__ == '__main__':
     app.run(debug=True, threaded=True, host='0.0.0.0', port=3000) 

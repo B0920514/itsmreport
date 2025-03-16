@@ -34,7 +34,9 @@ ENV/
 # Project specific
 uploads/
 *.xlsx
-.DS_Store
+*.xls
+*.log
 
-# Logs
-*.log 
+# OS specific
+.DS_Store
+Thumbs.db 
