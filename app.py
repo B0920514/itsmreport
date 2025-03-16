@@ -269,7 +269,10 @@ def create_comparison_charts(last_week_count, this_week_count, new_count,
     
     # Create year buttons
     year_buttons = []
-    for i, year in enumerate(sorted(weekly_counts.keys())):
+    sorted_years = sorted(weekly_counts.keys())
+    default_year_index = sorted_years.index(2025)
+    
+    for i, year in enumerate(sorted_years):
         visibility = [False] * len(weekly_counts)
         visibility[i] = True
         year_buttons.append(dict(
@@ -292,6 +295,7 @@ def create_comparison_charts(last_week_count, this_week_count, new_count,
                 buttons=year_buttons,
                 direction="down",
                 showactive=True,
+                active=default_year_index,  # 设置默认选中的按钮索引
                 x=0.1,
                 y=1.15,
                 xanchor="left",
@@ -316,8 +320,15 @@ def create_comparison_charts(last_week_count, this_week_count, new_count,
             )
         ]
     )
-    fig4.update_xaxes(title_text="Week Number", showgrid=False, showline=True, linewidth=2, linecolor='lightgray')
-    fig4.update_yaxes(title_text="Ticket Count", showgrid=True, gridwidth=1, gridcolor='lightgray', showline=True, linewidth=2, linecolor='lightgray')
+    
+    # 设置默认显示的年份数据
+    default_visibility = [False] * len(weekly_counts)
+    default_visibility[default_year_index] = True
+    
+    # 更新所有数据的可见性
+    for i, trace in enumerate(fig4.data):
+        trace.visible = default_visibility[i]
+    
     charts.append(json.loads(fig4.to_json()))
     
     return charts
